@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Szkolny Dziennik - Panel</title>
+  <style>
+    body{font-family:Arial,Helvetica,sans-serif;background:#eef6ff;margin:0}
+    header{background:#2c7be5;color:#fff;padding:12px 20px;display:flex;justify-content:space-between;align-items:center}
+    .wrap{max-width:1000px;margin:24px auto;padding:20px;background:#fff;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.08)}
+    table{width:100%;border-collapse:collapse;margin-top:12px}
+    th,td{padding:10px;border:1px solid #e6eef9;text-align:left}
+    th{background:#f1f8ff}
+    input[type="text"]{width:100%;padding:6px;border:1px solid #ccc;border-radius:4px}
+    .actions button{margin-right:6px}
+    .btn{background:#2c7be5;color:#fff;border:none;padding:8px 12px;border-radius:6px;cursor:pointer}
+    .btn-danger{background:#ff4b5c}
+    .small{font-size:13px;color:#666}
+  </style>
+</head>
+<body>
+  <header>
+    <div>📘 Szkolny Dziennik</div>
+    <div id="userInfo"></div>
+  </header>
+
+  <div class="wrap">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <h2>Uczniowie i oceny</h2>
+      <div>
+        <button class="btn" id="btnAddRow">Dodaj ucznia</button>
+        <button class="btn btn-danger" id="btnLogout">Wyloguj</button>
+      </div>
+    </div>
+
+    <table id="studentsTable">
+      <thead><tr><th>Imię i nazwisko</th><th>Ocena</th><th>Uwagi</th><th class="small">Akcje</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p class="small">Zmiany zapisują się w Firestore i są widoczne na innych urządzeniach.</p>
+  </div>
+
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
+
+  <script src="firebase-init.js"></script>
+  <script>
+    // panel logic: load students collection, allow edits only for teacher/admin
+    let session = null;
+    try {
+      session = JSON.parse(localStorage.getItem('szd_user') || 'null');
+    } catch(e){ session = null; }
+    if(!session){ window.location.href = 'index.html'; throw new Error('No session'); }
+
+    document.getElementById('userInfo').textContent = session.username + ' (' + session.role + ')';
+
+    const db = firebase.firestore();
+    const studentsRef = db.collection('students');
+
+    // role check
+    const canEdit = (session.role === 'teacher' || session.role === 'admin');
+
+    async function render() {
+      const tbody = document.querySelector('#studentsTable tbody');
+      tbody.innerHTML = '';
+      const snap = await studentsRef.orderBy('name').get();
+      if (snap.empty) {
+        // seed sample students if none
+        const defaults = [
+          { name: "Anna Kowalska", grade: "5", note: "Aktywna na lekcji" },
+          { name: "Jan Nowak", grade: "4", note: "Potrzebuje pomocy" }
+        ];
+        for (const s of defaults) await studentsRef.add(s);
+        return render();
+      }
+      snap.forEach(doc => {
+        const data = doc.data();
+        const tr = document.createElement('tr');
+
+        const nameCell = document.createElement('td');
+        const gradeCell = document.createElement('td');
+        const noteCell = document.createElement('td');
+        const actionsCell = document.createElement('td');
+
+        if (canEdit) {
+          nameCell.innerHTML = `<input value="${escapeHtml(data.name||'')}" data-id="${doc.id}" data-field="name">`;
+          gradeCell.innerHTML = `<input value="${escapeHtml(data.grade||'')}" data-id="${doc.id}" data-field="grade">`;
+          noteCell.innerHTML = `<input value="${escapeHtml(data.note||'')}" data-id="${doc.id}" data-field="note">`;
+          actionsCell.innerHTML = `<div class="actions"><button class="btn btn-danger" data-del="${doc.id}">Usuń</button></div>`;
+        } else {
+          nameCell.textContent = data.name || '';
+          gradeCell.textContent = data.grade || '';
+          noteCell.textContent = data.note || '';
+          actionsCell.innerHTML = '<span class="small">Brak uprawnień do edycji</span>';
+        }
+
+        tr.appendChild(nameCell);
+        tr.appendChild(gradeCell);
+        tr.appendChild(noteCell);
+        tr.appendChild(actionsCell);
+        tbody.appendChild(tr);
+      });
+
+      if (canEdit) attachEditableHandlers();
+    }
+
+    function attachEditableHandlers() {
+      const inputs = document.querySelectorAll('input[data-id]');
+      inputs.forEach(inp => {
+        inp.addEventListener('change', async (e) => {
+          const id = inp.getAttribute('data-id');
+          const field = inp.getAttribute('data-field');
+          const value = inp.value;
+          await studentsRef.doc(id).update({ [field]: value });
+          // optional: toast
+        });
+      });
+      const delButtons = document.querySelectorAll('button[data-del]');
+      delButtons.forEach(btn => {
+        btn.addEventListener('click', async () => {
+          if (!confirm('Na pewno usunąć?')) return;
+          const id = btn.getAttribute('data-del');
+          await studentsRef.doc(id).delete();
+          render();
+        });
+      });
+    }
+
+    document.getElementById('btnAddRow').addEventListener('click', async ()=>{
+      if(!canEdit){ alert('Brak uprawnień'); return; }
+      const name = prompt('Imię i nazwisko ucznia:');
+      if(!name) return;
+      const grade = prompt('Ocena:');
+      await studentsRef.add({ name, grade: grade||'', note: '' });
+      render();
+    });
+
+    document.getElementById('btnLogout').addEventListener('click', ()=>{
+      localStorage.removeItem('szd_user');
+      window.location.href = 'index.html';
+    });
+
+    function escapeHtml(str){ return String(str).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+    // realtime updates
+    studentsRef.onSnapshot(() => render());
+
+    // initial render
+    render();
+  </script>
+</body>
+</html>
